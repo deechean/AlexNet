@@ -10,6 +10,7 @@ import tensorflow as tf
 import os 
 import matplotlib.pyplot as plt
 import numpy as np
+import time
 
 def get_variable(name, shape, initializer, regularizer=None, dtype='float', trainable=True):
     collections = [tf.GraphKeys.GLOBAL_VARIABLES]
@@ -22,7 +23,7 @@ def get_variable(name, shape, initializer, regularizer=None, dtype='float', trai
                            trainable=trainable)
     #tf.get_variable_scope().reuse_variables()
 
-def conv2d(x, ksize, stride, filter_out, name, padding):
+def conv2d(x, ksize, stride, filter_out, name, padding='VALID', activate = 'NONE'):
     """ 
     x: input 
     ksize: kernel size 
@@ -30,6 +31,7 @@ def conv2d(x, ksize, stride, filter_out, name, padding):
     filter_out: filters numbers
     name: name of the calculation
     padding: VALID - no padding, SAME - keep the output size same as input size
+    activate: RELU - relu or SIGMOID  -sigmoid, TANH - tanh
     """
     with tf.variable_scope(name):
         #Get input dimention
@@ -50,8 +52,14 @@ def conv2d(x, ksize, stride, filter_out, name, padding):
         conv = tf.nn.conv2d(x, kernel, [1, stride, stride, 1], padding=padding)
         #add conv result with bias
         out = tf.nn.bias_add(conv, bias)
-        #use relu
-        return tf.nn.relu(out)
+        #activate           
+        if activate == 'SIGMOID':
+            out = tf.nn.sigmoid(out)
+        elif activate == 'TANH':
+            out = tf.nn.tanh(out)
+        elif activate == 'RELU':
+            out = tf.nn.relu(out)
+        return out
     
     
 def max_pool(x, ksize, stride, name, padding):
@@ -82,39 +90,52 @@ def flatten(x):
         dim *= shape[i]
     return tf.reshape(x, [-1, dim]), dim
 
-def fc_layer(x, i_size, o_size, name, is_relu=None):
+def fc_layer(x, i_size, o_size, name, activate = 'NONE'):
     """Full connection layer
         x:
         i_size: input size
         o_size: output size
         name: name of the calculation
-        is_relu: 
+        activate: RELU - relu or SIGMOID  -sigmoid, TANH - tanh
     """
     with tf.variable_scope(name) as scope:
         w = tf.get_variable('w', shape=[i_size, o_size], dtype='float')
         b = tf.get_variable('b', shape=[o_size], dtype='float')
         out = tf.nn.xw_plus_b(x, w, b, name=scope.name)
-        if is_relu:
+        
+         #activate           
+        if activate == 'SIGMOID':
+            out = tf.nn.sigmoid(out)
+        elif activate == 'TANH':
+            out = tf.nn.tanh(out)
+        elif activate == 'RELU':
             out = tf.nn.relu(out)
+    
         return out
 
-def drop_out(x, keep_prob, name):
+def drop_out(x, drop_rate, name):
     """drop out to prevent overfit, it should only used in training, not in test
         x: input
-        keep_prob: probability of drop out, normally is 0.5
+        drop_rate: probability of drop out, normally is 0.5
         name: name of the calculation
         
     """
-    return tf.nn.dropout(x, keep_prob=keep_prob, name=name)
-
-def saveEvalData(file,datalist):
-    with open(os.getcwd()+"/"+file,'a+',encoding='utf-8') as f:
-        step = 0
-        for x in datalist:
-            step += 1
-            f.write(str(step)+','+ str(x) + '\n')
-            
+    if tf.__version__ >= '1.13.0':
+        return tf.nn.dropout(x, rate=drop_rate, name=name)
+    else:
+        return tf.nn.dropout(x, keep_prob=1-drop_rate, name=name)
+    
+def local_response_norm(x, depth_radius=4, bias=1.0, alpha=0.001/9, beta=0.75):
+    return tf.nn.lrn(x, depth_radius, bias, alpha, beta)
+    
 def printimages(images):
     for img in images:    
         plt.imshow(np.asarray(img).reshape(32,32,3))
         plt.show()
+
+def SaveCheckpoint2S3(ori_dir,des_dir):
+    bucketname = 'sagemaker-deechean-dl' 
+    for file in os.listdir(file_dir):
+        if os.path.isfile(file_dir+file):
+            print('save files to s3')
+            aws_boto3.upload_file(file_dir+file, bucketname,des_dir+file)

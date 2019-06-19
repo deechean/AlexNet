@@ -4,299 +4,166 @@
 Created on Mon Apr 15 22:23:43 2019
 
 @author: Deechean
-Routine for decoding the CIFAR-10 binary file format."""
+"""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+import pickle
 import numpy as np
+import random
 import tensorflow as tf
 import matplotlib.pyplot as plt
-import os
+import time 
+from PIL import Image
 
-from six.moves import xrange  # pylint: disable=redefined-builtin
+def load(file_name):
+    with open(file_name, 'rb') as fo:
+        data = pickle.load(fo, encoding='bytes')
+        return data  
 
-# 定义图片的像素，原生图片32 x 32
-# Process images of this size. Note that this differs from the original CIFAR
-# image size of 32 x 32. If one alters this number, then the entire model
-# architecture will change and any model would need to be retrained.
-# IMAGE_SIZE = 24
-IMAGE_SIZE = 32
-# Global constants describing the CIFAR-10 data set.
-# 分类数量
-NUM_CLASSES = 10
-# 训练集大小
-NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN = 50000
-# 评价集大小
-NUM_EXAMPLES_PER_EPOCH_FOR_EVAL = 10000
+class cifar10(object): 
+    def __init__(self,path='cifar-10-batches-py/'):
+        self.train_indexs = list()
+        self.test_indexs = list()
+        self.data_path = path
+        self.train_images, self.train_labels = self._get_train()
+        self.test_images, self.test_labels = self._get_test()
+        self.label_dic = {0:'aircraft', 1:'car',2:'bird',3:'cat',4:'deer',5:'dog',6:'frog',7:'horse',8:'ship',9:'truck'}
 
-RESIZE = 225
+        
+    def _get_train(self):
+        train_labels = []        
+        data1 = load(self.data_path+'data_batch_1')
+        x1 = np.array(data1[b'data'])
+        y1 = data1[b'labels']
+        train_data = np.array(x1)
+        train_labels = np.array(y1)
+        
+        data2 = load(self.data_path+'data_batch_2')
+        x2 = np.array(data2[b'data'])
+        y2 = data2[b'labels']
+        train_data = np.append(train_data, x2)
+        train_labels = np.append(train_labels, y2)
 
+        data3 = load(self.data_path+'data_batch_3')
+        x3 = np.array(data3[b'data'])
+        y3 = np.array(data3[b'labels']).reshape(10000)
+        train_data = np.append(train_data, x3)
+        train_labels = np.append(train_labels, y3)
 
-# 从CIFAR10数据文件中读取样例
-# filename_queue一个队列的文件名
-def read_cifar10(filename_queue):
-
-
-    class CIFAR10Record(object):
-        pass
-
-    result = CIFAR10Record()
-
-    # Dimensions of the images in the CIFAR-10 dataset.
-    # See http://www.cs.toronto.edu/~kriz/cifar.html for a description of the
-    # input format.
-    # 分类结果的长度，CIFAR-100长度为2
-    label_bytes = 1  # 2 for CIFAR-100
-    result.height = 32
-    result.width = 32
-    # 3位表示rgb颜色（0-255,0-255,0-255）
-    result.depth = 3
-    image_bytes = result.height * result.width * result.depth
-    # Every record consists of a label followed by the image, with a
-    # fixed number of bytes for each.
-    # 单个记录的总长度=分类结果长度+图片长度
-    record_bytes = label_bytes + image_bytes
-
-    # Read a record, getting filenames from the filename_queue.  No
-    # header or footer in the CIFAR-10 format, so we leave header_bytes
-    # and footer_bytes at their default of 0.
-    # 读取
-    reader = tf.FixedLengthRecordReader(record_bytes=record_bytes)
-    result.key, value = reader.read(filename_queue)
-
-    # Convert from a string to a vector of uint8 that is record_bytes long.
-    record_bytes = tf.decode_raw(value, tf.uint8)
-
-    # 第一位代表lable-图片的正确分类结果，从uint8转换为int32类型
-    # The first bytes represent the label, which we convert from uint8->int32.
-    result.label = tf.cast(
-        tf.strided_slice(record_bytes, [0], [label_bytes]), tf.int32)
-
-    # 分类结果之后的数据代表图片，我们重新调整大小
-    # The remaining bytes after the label represent the image, which we reshape
-    # from [depth * height * width] to [depth, height, width].
-    depth_major = tf.reshape(
-        tf.strided_slice(record_bytes, [label_bytes],
-                         [label_bytes + image_bytes]),
-        [result.depth, result.height, result.width])
-    # 格式转换，从[颜色,高度,宽度]--》[高度,宽度,颜色]
-    # Convert from [depth, height, width] to [height, width, depth].
-    result.uint8image = tf.transpose(depth_major, [1, 2, 0])
-
-    return result
-
-
-# 构建一个排列后的一组图片和分类
-def _generate_image_and_label_batch(image, label, min_queue_examples,
-                                    batch_size, shuffle):
-
-    # Create a queue that shuffles the examples, and then
-    # read 'batch_size' images + labels from the example queue.
-    # 线程数
-    num_preprocess_threads = 8
-    if shuffle:
-        images, label_batch = tf.train.shuffle_batch(
-            [image, label],
-            batch_size=batch_size,
-            num_threads=num_preprocess_threads,
-            capacity=min_queue_examples + 3 * batch_size,
-            min_after_dequeue=min_queue_examples)
-    else:
-        images, label_batch = tf.train.batch(
-            [image, label],
-            batch_size=batch_size,
-            num_threads=num_preprocess_threads,
-            capacity=min_queue_examples + 3 * batch_size)
-
-    # Display the training images in the visualizer.
-    tf.summary.image('images', images)
-
-    return images, tf.reshape(label_batch, [batch_size])
-
-
-
-# 为CIFAR评价构建输入
-# data_dir路径
-# batch_size一个组的大小
-def distorted_inputs(data_dir, batch_size):
-  
-    filenames = [os.path.join(data_dir, 'data_batch_%d.bin' % i)
-                 for i in xrange(1, 6)]
-    for f in filenames:
-        if not tf.gfile.Exists(f):
-            raise ValueError('Failed to find file: ' + f)
-
-    # Create a queue that produces the filenames to read.
-    filename_queue = tf.train.string_input_producer(filenames)
-
-    # Read examples from files in the filename queue.
-    read_input = read_cifar10(filename_queue)
-    reshaped_image = tf.cast(read_input.uint8image, tf.float32)
-
-    height = IMAGE_SIZE
-    width = IMAGE_SIZE
-
-    # Image processing for training the network. Note the many random
-    # distortions applied to the image.
-    # 随机裁剪图片
-    # Randomly crop a [height, width] section of the image.
-    distorted_image = tf.random_crop(reshaped_image, [height, width, 3])
-    # 随机旋转图片
-    # Randomly flip the image horizontally.
-    distorted_image = tf.image.random_flip_left_right(distorted_image)
-
-    # Because these operations are not commutative, consider randomizing
-    # the order their operation.
-    # 亮度变换
-    distorted_image = tf.image.random_brightness(distorted_image,
-                                                 max_delta=63)
-    # 对比度变换
-    distorted_image = tf.image.random_contrast(distorted_image,
-                                               lower=0.2, upper=1.8)
-
-    # Subtract off the mean and divide by the variance of the pixels.
-    # Linearly scales image to have zero mean and unit norm
-    # 标准化
-    float_image = tf.image.per_image_standardization(distorted_image)
-    
-    resized_image = tf.image.resize_images(float_image,[RESIZE, RESIZE],
-                                          method = 0)
-
-    # Set the shapes of tensors.
-    # 设置张量的型
-    resized_image.set_shape([RESIZE, RESIZE, 3])
-    read_input.label.set_shape([1])
-
-    # Ensure that the random shuffling has good mixing properties.
-    # 确保洗牌的随机性
-    min_fraction_of_examples_in_queue = 0.4
-    min_queue_examples = int(NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN *
-                             min_fraction_of_examples_in_queue)
-    print('Filling queue with %d CIFAR images before starting to train. '
-          'This will take a few minutes.' % min_queue_examples)
-
-    # Generate a batch of images and labels by building up a queue of examples.
-    return _generate_image_and_label_batch(resized_image, read_input.label,
-                                           min_queue_examples, batch_size,
-                                           shuffle=True)
-
-
-# 为CIFAR评价构建输入
-# eval_data使用训练还是评价数据集
-# data_dir路径
-# batch_size一个组的大小
-def inputs(eval_data, data_dir, batch_size):
-   
-    if not eval_data:
-        filenames = [os.path.join(data_dir, 'data_batch_%d.bin' % i)
-                     for i in xrange(1, 6)]
-        num_examples_per_epoch = NUM_EXAMPLES_PER_EPOCH_FOR_TRAIN
-    else:
-        filenames = [os.path.join(data_dir, 'test_batch.bin')]
-        num_examples_per_epoch = NUM_EXAMPLES_PER_EPOCH_FOR_EVAL
-
-    for f in filenames:
-        if not tf.gfile.Exists(f):
-            raise ValueError('Failed to find file: ' + f)
-
-    # Create a queue that produces the filenames to read.
-    # 文件名队列
-    filename_queue = tf.train.string_input_producer(filenames)
-
-    # Read examples from files in the filename queue.
-    # 从文件中读取解析出的图片队列
-    read_input = read_cifar10(filename_queue)
-    # 转换为float
-    reshaped_image = tf.cast(read_input.uint8image, tf.float32)
-
-    height = IMAGE_SIZE
-    width = IMAGE_SIZE
-
-    # Image processing for evaluation.
-    # Crop the central [height, width] of the image.
-    # 剪切图片的中心
-    #resized_image = tf.image.resize_image_with_crop_or_pad(reshaped_image,
-    #                                                       height, width)
-    resized_image = tf.image.resize_images(reshaped_image,[RESIZE, RESIZE],
-                                          method = 0)
-
-    # Subtract off the mean and divide by the variance of the pixels.
-    # 标准化图片
-    float_image = tf.image.per_image_standardization(resized_image)
-
-    # Set the shapes of tensors.
-    # 设置张量的型
-    float_image.set_shape([RESIZE, RESIZE, 3])
-    read_input.label.set_shape([1])
-
-    # Ensure that the random shuffling has good mixing properties.
-    # 确保洗牌的随机性
-    min_fraction_of_examples_in_queue = 0.4
-    min_queue_examples = int(num_examples_per_epoch *
-                             min_fraction_of_examples_in_queue)
-
-    # Generate a batch of images and labels by building up a queue of examples.
-    return _generate_image_and_label_batch(float_image, read_input.label,
-                                           min_queue_examples, batch_size,
-                                           shuffle=False)
- 
-"""
-def get_batch_(batch_size, image, label):
-    batch_image = list()
-    batch_label = list()
-    indexs = list()
-    for i in range(batch_size):
-        index = random.randint(0, len(image)-1)
-        while index in indexs:
-            index = random.randint(0, len(image)-1)
-        d = list(image[index])
-        batch_image.append(d)
-        z = label[index]
-        batch_label.append(convert_label(z))
-        indexs.append(index)
-    return batch_image, batch_label
-""" 
-def convert_label(item):
-         if item == 0:
-            return [1,0,0,0,0,0,0,0,0,0]
-         elif item == 1:
-            return[0,0,0,0,0,0,0,0,0,1]
-         elif item == 2:
-            return[0,0,0,0,0,0,0,0,1,0]
-         elif item == 3:
-            return[0,0,0,0,0,0,0,1,0,0]
-         elif item == 4:
-            return[0,0,0,0,0,0,1,0,0,0]
-         elif item == 5:
-            return[0,0,0,0,0,1,0,0,0,0]      
-         elif item == 6:
-            return[0,0,0,0,1,0,0,0,0,0]
-         elif item == 7:
-            return[0,0,0,1,0,0,0,0,0,0]   
-         elif item == 8:
-            return[0,0,1,0,0,0,0,0,0,0]   
-         else:
-            return[0,1,0,0,0,0,0,0,0,0]         
-
-if __name__ == '__main__':
-    cifar10_dir='cifar-10-batches' 
-    batch_size=10
-    
-    with tf.Graph().as_default() as g: 
-        x, y = distorted_inputs(cifar10_dir, batch_size)
-        with tf.Session() as sess:
-            coord = tf.train.Coordinator()
-            threads = tf.train.start_queue_runners(sess, coord)
-            i = 0
-            while (not coord.should_stop()) and i < 5:
-                batch_x, batch_y = sess.run([x, y])
-                print ('batch_x shape',np.shape(batch_x))
-                i += 1
-                for img in batch_x:
-                    print('image shape',np.shape(img))
-                    plt.imshow(np.array(img).reshape(RESIZE,RESIZE,3))
-                    plt.show()
+        data4 = load(self.data_path+'data_batch_4')
+        x4 = np.array(data4[b'data'])
+        y4 = np.array(data4[b'labels']).reshape(10000)
+        train_data = np.append(train_data, x4)
+        train_labels = np.append(train_labels, y4)
+        
+        data5 = load(self.data_path+'data_batch_5')
+        x5 = np.array(data4[b'data'])
+        y5 = np.array(data4[b'labels']).reshape(10000)
+        train_data = np.append(train_data, x5)
+        train_labels = np.append(train_labels, y5)
+        
+        train_data = train_data.reshape(-1, 3, 32, 32)
+        train_labels.astype(np.int64)
+        
+        #for item in labels:
+        #    train_labels.append(item)
+        #print('image shape:',np.shape(train_data))
+        #print('label shape:',np.shape(train_labels))  
+        if len(train_data) != len(train_labels):
+            assert('train images ' + str(len(train_data))+' doesnt equal to train labels' + str(len(train_labels)))
             
+        print('train set length: '+str(len(train_data)))
+        return train_data, train_labels
+ 
+    def _get_test(self):
+        test_labels = list()
+        data1 = load(self.data_path+'test_batch')
+        x = np.array(data1[b'data']).reshape(-1, 3, 32, 32)
+        y = data1[b'labels']
+        
+        for item in y:
+            test_labels.append(item)
+        #print('test image shape:',np.shape(x))
+        #print('test label shape:',np.shape(test_labels))        
+        print('test set length: '+str(len(x)))
+        return x, test_labels
+    
+    def _resize(self,image):
+        resized_image = np.ndarray.reshape(image,(32,32,3))[2:30,2:30,0:3] 
+        #print(resized_image.shape)
+        return resized_image
+    
+    def random_flipper(self,image):
+        if random.random() < 0.5:
+            swap_time = int(len(image[0])/2)
+            for i in range(swap_time):
+                image[0][[i,len(image[0])-i-1],:] = image[0][[len(image[0])-i-1,i],:]
+                image[1][[i,len(image[1])-i-1],:] = image[1][[len(image[1])-i-1,i],:]
+                image[2][[i,len(image[2])-i-1],:] = image[2][[len(image[2])-i-1,i],:]
+        return image
+        
+    def image_distort(self,image):
+        
+        return image
+    
+    def random_bright(self, image, delta=32):
+        if random.random() < 0.5:
+            delta_r = int(random.uniform(-delta, delta))
+            delta_g = int(random.uniform(-delta, delta))
+            delta_b = int(random.uniform(-delta, delta))
+
+            R = image[0] + delta_r
+            G = image[1] + delta_g
+            B = image[2] + delta_b
+            
+            image = np.asarray([R,G,B])
+            #print(2)
+            #print(np.shape(image))
+            image = image.clip(min=0, max=255)
+        return image
+   
+    def get_train_batch(self,batch_size=128, augument = True, new_size=(32,32), resize = False):
+        batch_image = list()
+        batch_label = list()
+        data_index = list()
+        i = 0
+        while i < batch_size:
+            index = random.randint(0, len(self.train_labels)-1)
+            if not index in self.train_indexs:
+                i += 1
+                d = self.train_images[index]
+                if augument:
+                    d = self.random_bright(self.random_flipper(d))
+                if resize:
+                    d = self.resize_image(d,new_size)
+                batch_image.append(d)
+                batch_label.append(self.train_labels[index])
+                self.train_indexs.append(index)
+                data_index.append(index)
+                if len(self.train_indexs) >=  len(self.train_images):
+                    self.train_indexs.clear()
+        return np.array(batch_image).transpose(0,3,2,1).reshape(-1,new_size[0],new_size[1],3), batch_label, data_index
+        
+    def get_test_batch(self,batch_size=10000, new_size=(32,32), resize = False):
+        batch_image = list()
+        batch_label = list()
+        data_index = list()
+        i = 0
+        while i < batch_size:
+            index = random.randint(0, len(self.test_labels)-1)
+            if not index in self.test_indexs:
+                i += 1
+                d = self.test_images[index]
+                if resize:
+                    d = self.resize_image(d,new_size)
+                batch_image.append(d) 
+                batch_label.append(self.test_labels[index])
+                self.test_indexs.append(index)
+                data_index.append(index)
+                if len(self.test_indexs) >=  len(self.test_images):
+                    self.test_indexs.clear()
+        return  np.array(batch_image).transpose(0,3,2,1).reshape(-1,new_size[0],new_size[1],3), batch_label,data_index
+    
+    def resize_image(self, image, new_size):
+        img = Image.fromarray(image.astype('uint8').transpose(2,1,0))       
+        return np.asarray(img.resize(new_size,resample=Image.BILINEAR)).transpose(1,2,0)          
         

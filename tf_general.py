@@ -49,7 +49,7 @@ def conv2d(x, ksize, stride, filter_out, name, padding='VALID', activate = 'NONE
         #set bias, bias shape is [filter_out]
         bias = get_variable('bias', [filter_out], bias_initializer)
         #conv2d
-        conv = tf.nn.conv2d(x, kernel, [1, stride, stride, 1], padding=padding)
+        conv = tf.nn.conv2d(x, kernel, [1, stride, stride, 1], padding=padding, name='conv')
         #add conv result with bias
         out = tf.nn.bias_add(conv, bias)
         #activate           
